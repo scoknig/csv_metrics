@@ -13,6 +13,25 @@ st.write(
 
 uploaded_file = st.file_uploader("Upload water level CSV", type="csv")
 
+buffer_pct = st.number_input(
+    "Outlier buffer (%)",
+    min_value=0.0,
+    max_value=49.0,
+    value=0.0,
+    step=1.0,
+    help=(
+        "Optional. Trims this percentage of the highest and lowest readings "
+        "from each day before calculating metrics, to reduce the effect of "
+        "storm-driven outliers. Leave at 0 to use every reading."
+    ),
+)
+# st.caption(
+#     "Optional: removes extreme readings before calculating each day's metrics, "
+#     "so a storm spike doesn't skew the results. For example, entering `10` "
+#     "drops the highest 10% and lowest 10% of that day's readings before the "
+#     "high, low, and average are calculated. Leave at `0` to use every reading."
+# )
+
 
 def load_readings(file) -> pd.DataFrame:
     df = pd.read_csv(file, header=None, usecols=[0, 1], names=["date", "level"])
@@ -22,8 +41,21 @@ def load_readings(file) -> pd.DataFrame:
     return df
 
 
-def calculate_daily_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    daily = df.groupby(df["date"].dt.date)["level"]
+def _trim_outliers(values: pd.Series, buffer_pct: float) -> pd.Series:
+    if buffer_pct <= 0:
+        return values
+    n = len(values)
+    trim_count = int(n * buffer_pct / 100)
+    if trim_count * 2 >= n:
+        return values
+    return values.sort_values().iloc[trim_count : n - trim_count]
+
+
+def calculate_daily_metrics(df: pd.DataFrame, buffer_pct: float = 0.0) -> pd.DataFrame:
+    daily = df.groupby(df["date"].dt.date)["level"].apply(
+        lambda values: _trim_outliers(values, buffer_pct)
+    )
+    daily = daily.groupby(level=0)
     metrics = pd.DataFrame(
         {
             "Daily High Average": daily.max(),
@@ -46,17 +78,25 @@ if uploaded_file is not None:
         st.error("No valid date/water level rows were found in this file.")
         st.stop()
 
-    metrics = calculate_daily_metrics(readings)
+    metrics = calculate_daily_metrics(readings, buffer_pct)
 
     st.subheader("Daily Metrics")
     st.dataframe(metrics, use_container_width=True)
+
+    if buffer_pct > 0:
+        buffer_note = (
+            f" Before that, the highest and lowest {buffer_pct:g}% of readings "
+            "for each day were removed as potential outliers."
+        )
+    else:
+        buffer_note = " No outlier buffer was applied, so every reading was used."
 
     st.caption(
         "**How these are calculated:** each row in the uploaded file is one water "
         "level reading, timestamped by day. For every day, **Daily High Average** "
         "is the maximum reading recorded that day, **Daily Low Average** is the "
         "minimum reading recorded that day, and **Daily Average** is the mean of "
-        "all readings recorded that day."
+        "all readings recorded that day." + buffer_note
     )
 
     csv_buffer = io.StringIO()
